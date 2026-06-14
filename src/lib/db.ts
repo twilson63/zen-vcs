@@ -1,11 +1,12 @@
 /**
  * LMDB-backed local state for zen-vcs.
  *
+ * Uses the modern `lmdb` package (v3.x) for async, high-performance storage.
  * Namespaced keys — no SQL, no migration files, just get/put/del with
  * predictable key patterns. Same approach as ZenBin's server-side storage.
  */
 
-import { open, Database, RootDatabase, Env } from 'node-lmdb';
+import { open, RootDatabase } from 'lmdb';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 
@@ -79,12 +80,10 @@ const NS = {
 } as const;
 
 export class ZenDB {
-  private env: Env;
   private db: RootDatabase;
   private dbPath: string;
 
-  private constructor(env: Env, db: RootDatabase, dbPath: string) {
-    this.env = env;
+  private constructor(db: RootDatabase, dbPath: string) {
     this.db = db;
     this.dbPath = dbPath;
   }
@@ -94,24 +93,17 @@ export class ZenDB {
     const dbPath = join(basePath, '.zen-vcs');
     mkdirSync(dbPath, { recursive: true });
 
-    const env = new Env();
-    env.open({
+    const db: RootDatabase = await open({
       path: dbPath,
-      mapSize: 64 * 1024 * 1024, // 64MB — plenty for local VCS state
-      maxDbs: 8,
-    });
-
-    const db = env.openDbi({
       name: 'zenvcs',
-      create: true,
+      compression: true,
     });
 
-    return new ZenDB(env, db, dbPath);
+    return new ZenDB(db, dbPath);
   }
 
   async close(): Promise<void> {
     this.db.close();
-    this.env.close();
   }
 
   // --- Repo ---
@@ -123,8 +115,8 @@ export class ZenDB {
 
   async getRepo(name: string): Promise<Repo | null> {
     const key = `${NS.repo}:${name}`;
-    const val = this.db.getString(key);
-    return val ? JSON.parse(val) : null;
+    const val = await this.db.get(key);
+    return val ? JSON.parse(val as string) : null;
   }
 
   // --- Branch ---
@@ -136,21 +128,18 @@ export class ZenDB {
 
   async getBranch(name: string): Promise<Branch | null> {
     const key = `${NS.branch}:${name}`;
-    const val = this.db.getString(key);
-    return val ? JSON.parse(val) : null;
+    const val = await this.db.get(key);
+    return val ? JSON.parse(val as string) : null;
   }
 
   async listBranches(): Promise<Branch[]> {
     const branches: Branch[] = [];
     const prefix = `${NS.branch}:`;
-    const txn = this.env.beginTxn();
-    const cursor = new txn.Cursor(this.db);
-    for (let found = cursor.goToKey(prefix); found !== null && found.startsWith(prefix); found = cursor.goToNext()) {
-      const val = cursor.getString();
-      if (val) branches.push(JSON.parse(val));
+    for (const { key, value } of this.db.getRange({ start: prefix })) {
+      const strKey = key as string;
+      if (!strKey.startsWith(prefix)) break;
+      if (value) branches.push(JSON.parse(value as string));
     }
-    cursor.close();
-    txn.abort();
     return branches;
   }
 
@@ -163,21 +152,18 @@ export class ZenDB {
 
   async getEntry(rootId: string, path: string): Promise<Entry | null> {
     const key = `${NS.entry}:${rootId}:${path}`;
-    const val = this.db.getString(key);
-    return val ? JSON.parse(val) : null;
+    const val = await this.db.get(key);
+    return val ? JSON.parse(val as string) : null;
   }
 
   async getEntriesForRoot(rootId: string): Promise<Entry[]> {
     const entries: Entry[] = [];
     const prefix = `${NS.entry}:${rootId}:`;
-    const txn = this.env.beginTxn();
-    const cursor = new txn.Cursor(this.db);
-    for (let found = cursor.goToKey(prefix); found !== null && found.startsWith(prefix); found = cursor.goToNext()) {
-      const val = cursor.getString();
-      if (val) entries.push(JSON.parse(val));
+    for (const { key, value } of this.db.getRange({ start: prefix })) {
+      const strKey = key as string;
+      if (!strKey.startsWith(prefix)) break;
+      if (value) entries.push(JSON.parse(value as string));
     }
-    cursor.close();
-    txn.abort();
     return entries;
   }
 
@@ -190,26 +176,23 @@ export class ZenDB {
 
   async getReview(id: string): Promise<Review | null> {
     const key = `${NS.review}:${id}`;
-    const val = this.db.getString(key);
-    return val ? JSON.parse(val) : null;
+    const val = await this.db.get(key);
+    return val ? JSON.parse(val as string) : null;
   }
 
   async listReviews(status?: Review['status']): Promise<Review[]> {
     const reviews: Review[] = [];
     const prefix = `${NS.review}:`;
-    const txn = this.env.beginTxn();
-    const cursor = new txn.Cursor(this.db);
-    for (let found = cursor.goToKey(prefix); found !== null && found.startsWith(prefix); found = cursor.goToNext()) {
-      const val = cursor.getString();
-      if (val) {
-        const review: Review = JSON.parse(val);
+    for (const { key, value } of this.db.getRange({ start: prefix })) {
+      const strKey = key as string;
+      if (!strKey.startsWith(prefix)) break;
+      if (value) {
+        const review: Review = JSON.parse(value as string);
         if (!status || review.status === status) {
           reviews.push(review);
         }
       }
     }
-    cursor.close();
-    txn.abort();
     return reviews;
   }
 
@@ -222,8 +205,8 @@ export class ZenDB {
 
   async getRefs(repoName: string): Promise<Refs | null> {
     const key = `${NS.refs}:${repoName}`;
-    const val = this.db.getString(key);
-    return val ? JSON.parse(val) : null;
+    const val = await this.db.get(key);
+    return val ? JSON.parse(val as string) : null;
   }
 
   // --- Staging ---
@@ -236,30 +219,25 @@ export class ZenDB {
   async getStagedFiles(): Promise<StagedFile[]> {
     const files: StagedFile[] = [];
     const prefix = `${NS.stage}:`;
-    const txn = this.env.beginTxn();
-    const cursor = new txn.Cursor(this.db);
-    for (let found = cursor.goToKey(prefix); found !== null && found.startsWith(prefix); found = cursor.goToNext()) {
-      const val = cursor.getString();
-      if (val) files.push(JSON.parse(val));
+    for (const { key, value } of this.db.getRange({ start: prefix })) {
+      const strKey = key as string;
+      if (!strKey.startsWith(prefix)) break;
+      if (value) files.push(JSON.parse(value as string));
     }
-    cursor.close();
-    txn.abort();
     return files;
   }
 
   async clearStaging(): Promise<void> {
     const prefix = `${NS.stage}:`;
-    const txn = this.env.beginTxn();
-    const cursor = new txn.Cursor(this.db);
     const keys: string[] = [];
-    for (let found = cursor.goToKey(prefix); found !== null && found.startsWith(prefix); found = cursor.goToNext()) {
-      keys.push(found);
+    for (const { key } of this.db.getRange({ start: prefix })) {
+      const strKey = key as string;
+      if (!strKey.startsWith(prefix)) break;
+      keys.push(strKey);
     }
-    cursor.close();
     for (const key of keys) {
-      txn.del(key);
+      await this.db.remove(key);
     }
-    txn.commit();
   }
 
   // --- Utility ---
@@ -267,19 +245,17 @@ export class ZenDB {
   async drop(): Promise<void> {
     // Clear all data — for testing or `zen-vcs clean`
     const prefixes = Object.values(NS);
-    const txn = this.env.beginTxn();
     for (const prefix of prefixes) {
       const fullPrefix = `${prefix}:`;
-      const cursor = new txn.Cursor(this.db);
       const keys: string[] = [];
-      for (let found = cursor.goToKey(fullPrefix); found !== null && found.startsWith(fullPrefix); found = cursor.goToNext()) {
-        keys.push(found);
+      for (const { key } of this.db.getRange({ start: fullPrefix })) {
+        const strKey = key as string;
+        if (!strKey.startsWith(fullPrefix)) break;
+        keys.push(strKey);
       }
-      cursor.close();
       for (const key of keys) {
-        txn.del(key);
+        await this.db.remove(key);
       }
     }
-    txn.commit();
   }
 }

@@ -105,7 +105,7 @@ export class ZenBinClient {
       .substring(0, 24);
 
     const canonical = `${method}\n${urlPath}\n${timestamp}\n${nonce}\n${contentDigest}`;
-    const privateKey = createPrivateKey({ key: this.keys.privateJwk, format: 'jwk' });
+    const privateKey = createPrivateKey({ key: this.keys.privateJwk as any, format: 'jwk' });
     const signature = sign(null, Buffer.from(canonical), privateKey).toString('base64url');
 
     return {
@@ -275,7 +275,7 @@ export async function loadKeys(path: string): Promise<KeyPair> {
   const data = JSON.parse(raw);
 
   // Compute fingerprint from public key
-  const publicKey = createPublicKey({ key: data.publicJwk, format: 'jwk' });
+  const publicKey = createPublicKey({ key: data.publicJwk as any, format: 'jwk' });
   const der = publicKey.export({ type: 'spki', format: 'der' });
   const fingerprint = createHash('sha256').update(der).digest('base64url');
 

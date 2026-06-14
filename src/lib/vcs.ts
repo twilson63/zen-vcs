@@ -149,7 +149,7 @@ export class ZenVCS {
   // --- Staging ---
 
   async add(filePath: string): Promise<void> {
-    const fullPath = join(process.cwd(), filePath);
+    const fullPath = join(this.config.dbPath, filePath);
     if (!existsSync(fullPath)) throw new Error(`File not found: ${filePath}`);
 
     const content = readFileSync(fullPath);
@@ -299,7 +299,7 @@ export class ZenVCS {
       name: targetBranch,
       rootId: mergeRootId,
       parentId: target.rootId,
-      message: treeRoot.message,
+      message: treeRoot.message || `Merge ${sourceBranch} into ${targetBranch}`,
       timestamp: new Date().toISOString(),
     });
 

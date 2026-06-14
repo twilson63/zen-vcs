@@ -17,7 +17,7 @@
 
 import { Command } from 'commander';
 import { ZenVCS, VcsConfig } from './lib/vcs.js';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -28,8 +28,9 @@ async function findConfig(): Promise<VcsConfig> {
   // Walk up from cwd looking for .zen-vcs directory
   let dir = process.cwd();
   while (dir !== '/') {
-    if (existsSync(join(dir, '.zen-vcs'))) {
-      const configPath = join(dir, '.zen-vcs', 'config.json');
+    const zenDir = join(dir, '.zen-vcs');
+    if (existsSync(zenDir)) {
+      const configPath = join(zenDir, 'config.json');
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync(configPath, 'utf8'));
         return {
@@ -39,6 +40,13 @@ async function findConfig(): Promise<VcsConfig> {
           dbPath: dir,
         };
       }
+      // .zen-vcs dir exists but no config — look for LMDB files
+      // to infer the repo name (fallback)
+      const fs = require('fs');
+      const files = fs.readdirSync(zenDir);
+      const lmdbFile = files.find((f: string) => f.endsWith('.lmdb') || f === 'zenvcs-lmdb');
+      // Can't determine repo name without config — require init
+      throw new Error(`Found .zen-vcs directory but no config.json. Run 'zen-vcs init' again or create ${configPath}`);
     }
     dir = join(dir, '..');
   }
@@ -69,6 +77,16 @@ program
     const vcs = await ZenVCS.init(config);
     try {
       const repo = await vcs.initRepo(name);
+
+      // Write config.json so other commands can find the repo
+      const configDir = join(process.cwd(), '.zen-vcs');
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+        repoName: name,
+        remoteUrl: opts.remote,
+        keysPath: opts.keys,
+      }, null, 2));
+
       console.log(`✓ Initialized repo "${name}" with root: ${repo.rootId}`);
       console.log(`  Remote: ${opts.remote}`);
       console.log(`  Owner:  ${repo.ownerFingerprint}`);
